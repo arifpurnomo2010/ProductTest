@@ -1,0 +1,423 @@
+# Load necessary libraries
+library(shiny)
+library(shinydashboard)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(broom)
+library(tidyplots)
+library(ShapleyValue)
+library(patchwork)
+
+# UI
+ui <- fluidPage(
+  titlePanel("Product Test Analysis"),
+  
+  mainPanel(
+    width = 12,
+    
+    # Filter section at the top
+    fluidRow(
+      column(12,
+        wellPanel(
+          fluidRow(
+            column(6, 
+              selectInput("ageFilter", "Filter by Age:",
+                          choices = c("All", "Younger", "Older"),
+                          selected = "All")
+            ),
+            column(6,
+              actionButton("resetFilters", "Reset Filters", 
+                           style = "margin-top: 25px;")
+            )
+          ),
+          textOutput("filterInfo")
+        )
+      )
+    ),
+    
+    # Outputs in frames
+    fluidRow(
+      # Left-top output
+      column(6, 
+        wellPanel(
+          plotOutput("barstack_plot"),
+          style = "height: 400px;"
+        )
+      ),
+      
+      # Right-top output
+      column(6, 
+        wellPanel(
+          plotOutput("regression_plot"),
+          style = "height: 400px;"
+        )
+      )
+    ),
+    
+    fluidRow(
+      # Left-bottom output
+      column(6, 
+        wellPanel(
+          verbatimTextOutput("sig_test"),
+          style = "height: 400px;"
+        )
+      ),
+      
+      # Right-bottom output
+      column(6, 
+        wellPanel(
+          plotOutput("variable_comparison"),
+          style = "height: 400px;"
+        )
+      )
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  # Read data directly from path
+  getData <- reactive({
+    # Define the fixed path to your Excel file
+    file_path <- "D:/DASHBOARD Product Test/Soap.xlsx"  # Sesuaikan dengan path file Excel Anda
+    
+    # Read the data
+    df <- read_excel(file_path)
+    
+    # Ensure Product is a factor
+    df$Product <- as.factor(df$Product)
+    
+    # Ensure Age is a factor
+    df$Age <- as.factor(df$Age)
+    
+    return(df)
+  })
+  
+  # Filter data berdasarkan input
+  getFilteredData <- reactive({
+    df <- getData()
+    
+    # Apply age filter
+    if (input$ageFilter != "All") {
+      df <- df %>% filter(Age == input$ageFilter)
+    }
+    
+    return(df)
+  })
+  
+  # Reset filter button
+  observeEvent(input$resetFilters, {
+    updateSelectInput(session, "ageFilter", selected = "All")
+  })
+  
+  # Update age filter choices based on data
+  observe({
+    df <- getData()
+    if (!is.null(df)) {
+      age_choices <- c("All", sort(unique(as.character(df$Age))))
+      updateSelectInput(session, "ageFilter", choices = age_choices, selected = input$ageFilter)
+    }
+  })
+  
+  # Display current filter information
+  output$filterInfo <- renderText({
+    if (input$ageFilter == "All") {
+      "Showing data for all age groups"
+    } else {
+      paste("Filtered by Age:", input$ageFilter)
+    }
+  })
+
+  # stacked bar with custom colors
+  output$barstack_plot <- renderPlot({
+    df <- getFilteredData()
+    
+    # Data preparation
+    plot_data <- df %>%
+      count(Product, PI_Label) %>%
+      group_by(Product) %>%
+      arrange(desc(PI_Label)) %>%
+      mutate(
+          prop = n / sum(n),
+          pos = cumsum(prop) - prop / 2,
+          label = paste0(round(prop * 100))
+      )
+    
+    # Custom colors as specified
+    colors <- c(
+      "1 - Highly likely to by" = "#006400",     # Dark Green
+      "2 - Likely to buy" = "#2E8B57",          # Sea Green
+      "3 - Neutral" = "#808080",            # Gray
+      "4 - Unlikely to buy" = "#FFB6C1",       # Light Pink
+      "5 - Highly unlikely to buy" = "#8B0000"   # Dark Red
+    )
+    
+    # Create plot
+    ggplot(plot_data, aes(x = Product, y = prop, fill = PI_Label)) +
+      geom_col() +
+      # Add frequency labels
+      geom_text(aes(y = pos, label = label), color = "white", size = 5) +
+      scale_fill_manual(values = colors) +
+      labs(title = "Product Comparison") +
+      theme_minimal() +
+      # Remove y-axis and its title, keep x-axis labels (product names)
+     theme(
+  axis.title.y = element_blank(),
+  axis.text.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.title.x = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+  # Increase product name text size
+  axis.text.x = element_text(size = 14, face = "bold"),
+  # Tambahkan pengaturan untuk legend di sini:
+  legend.text = element_text(size = 12),  # Ukuran teks keterangan legend
+  legend.title = element_text(size = 14)  # Ukuran judul legend
+) +
+      # Format y-axis as percentage but hide the labels
+      scale_y_continuous(labels = NULL)
+  })
+
+  # Significance test between products
+  output$sig_test <- renderPrint({
+    df <- getFilteredData()
+    
+    # Melakukan uji t untuk Purchase Intention (PI) antara Product A dan B
+    pi_test <- t.test(PI ~ Product, data = df)
+    
+    # Mengambil mean dari kedua produk
+    mean_a <- round(pi_test$estimate[1], 2)  # Mean Product A
+    mean_b <- round(pi_test$estimate[2], 2)  # Mean Product B
+    
+    # Menentukan kesimpulan berdasarkan hasil uji
+    conclusion <- ifelse(pi_test$p.value < 0.05,
+                         ifelse(mean_a > mean_b, 
+                                "The PI for A is significantly HIGHER than for B, with 95% confidence.",
+                                "The PI for A is significantly LOWER than for B, with 95% confidence."),
+                         "NO SIGNIFICANT DIFFERENCE between A and B at the 95% confidence level.")
+    
+    # Menampilkan informasi filter
+    age_info <- if(input$ageFilter == "All") {
+      "All age groups"
+    } else {
+      paste("Age group:", input$ageFilter)
+    }
+    
+    # Menampilkan hasil dengan format yang lebih bersih
+    cat("Significance test between products\n")
+    cat("--------------------------------\n")
+    cat("Analysis for:", age_info, "\n\n")
+    cat("Product A    Product B\n")
+    cat("Mean score:\n")
+    cat(mean_a, "        ", mean_b, "\n\n")
+    cat("p-value:", round(pi_test$p.value, 4), "\n")
+    cat("Conclusion: ", conclusion, "\n")
+  })
+
+  # Regression plot
+  output$regression_plot <- renderPlot({
+    df <- getFilteredData()
+      
+    # Ensure we're working with numeric data
+    df_numeric <- df %>%
+      select(PI, Fragrance, Natural, Rinsability) %>%
+      mutate_all(as.numeric)
+    
+    # Prepare data for shapley calculation
+    y = df_numeric$PI
+    y <- as.numeric(y)
+    
+    # Create a data frame with just the predictor variables
+    predictors_df <- df_numeric %>% select(Fragrance, Natural, Rinsability)
+    predictors_df <- as.data.frame(predictors_df)
+    
+    # Calculate Shapley Values
+    SV = shapleyvalue(y, predictors_df)
+    
+    # Extract Standardized Shapley Values
+    std_sv = SV[2, ]
+    std_sv <- as.numeric(std_sv) 
+    
+    # Convert to data frame for plotting
+    sv_df <- data.frame(
+      term = colnames(predictors_df),
+      std_sv = std_sv*100
+    )
+   
+    # Order by standardized SV (descending)
+    sv_df <- sv_df %>%
+      arrange(desc(std_sv)) %>%
+      mutate(term = factor(term, levels = term))
+    
+    # Create horizontal bar chart (changed from vertical)
+    # Reverse the order to show largest value at the top
+    sv_df <- sv_df %>%
+      mutate(term = factor(term, levels = rev(levels(term))))
+    
+    # Menambahkan judul dengan informasi filter
+    title_suffix <- if(input$ageFilter == "All") {
+      ""
+    } else {
+      paste(" (", input$ageFilter, ")", sep="")
+    }
+    
+    ggplot(sv_df, aes(x = std_sv, y = term, fill = std_sv)) +
+      geom_col(width = 0.5) + # Made bars thinner
+      scale_fill_gradient(low = "skyblue", high = "darkblue") +
+      labs(
+        title = paste("Variable Impact on PI", title_suffix),
+        subtitle = "Standardized Shapley Values",
+        x = "",  # Removed x-axis title
+        y = ""
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        plot.title = element_text(size = 16, face = "bold", hjust = 0),
+        plot.subtitle = element_text(size = 12, hjust = 0),
+        axis.text.y = element_text(size = 14), # Larger attribute names
+        axis.text.x = element_text(size = 12)
+      ) +
+      # Extend the x-axis limit to ensure all values are visible
+      scale_x_continuous(limits = c(0, max(sv_df$std_sv) * 1.2)) +
+      geom_text(aes(label = paste0(round(std_sv, 0), "%")), 
+                hjust = -0.2, 
+                size = 5)
+  })
+
+ # Variable comparison between products
+  output$variable_comparison <- renderPlot({
+    df <- getFilteredData()
+    
+    # Calculate Shapley Values first (copied from regression plot section)
+    # Ensure we're working with numeric data
+    df_numeric <- df %>%
+      select(PI, Fragrance, Natural, Rinsability) %>%
+      mutate_all(as.numeric)
+    
+    # Prepare data for shapley calculation
+    y = df_numeric$PI
+    y <- as.numeric(y)
+    
+    # Create a data frame with just the predictor variables
+    predictors_df <- df_numeric %>% select(Fragrance, Natural, Rinsability)
+    predictors_df <- as.data.frame(predictors_df)
+    
+    # Calculate Shapley Values
+    SV = shapleyvalue(y, predictors_df)
+    
+    # Extract Standardized Shapley Values
+    std_sv = SV[2, ]
+    std_sv <- as.numeric(std_sv) 
+    
+    # Create attribute order based on absolute Shapley values
+    # Reverse the order to ensure largest value is at the top
+    attribute_order <- rev(names(predictors_df)[order(abs(std_sv), decreasing = TRUE)])
+    
+    # Calculate overall average for each attribute
+    overall_avg <- df %>%
+      summarize(
+        Fragrance = mean(Fragrance, na.rm = TRUE),
+        Natural = mean(Natural, na.rm = TRUE),
+        Rinsability = mean(Rinsability, na.rm = TRUE)
+      )
+    
+    # Reshape data for comparison and calculate deviation from average
+    comparison_data <- df %>%
+      group_by(Product) %>%
+      summarize(
+        Fragrance = mean(Fragrance, na.rm = TRUE) - overall_avg$Fragrance,
+        Natural = mean(Natural, na.rm = TRUE) - overall_avg$Natural,
+        Rinsability = mean(Rinsability, na.rm = TRUE) - overall_avg$Rinsability
+      ) %>%
+      pivot_longer(
+        cols = c("Fragrance", "Natural", "Rinsability"),
+        names_to = "Variable",
+        values_to = "Deviation"
+      )
+    
+    # Create separate plots for each product
+    plot_list <- lapply(as.character(unique(comparison_data$Product)), function(prod) {
+      prod_data <- comparison_data %>% 
+        filter(Product == prod)
+      
+      # Ensure correct order of attributes based on Shapley values
+      prod_data$Variable <- factor(prod_data$Variable, levels = attribute_order)
+      
+      # Create plot for each product
+      p <- ggplot(prod_data, aes(x = Variable, y = Deviation)) +
+        # Add vertical line at zero
+        geom_hline(yintercept = 0, color = "black", linetype = "solid", size = 0.5) +
+        geom_bar(stat = "identity", 
+                 fill = ifelse(prod_data$Deviation > 0, "blue", "red"), 
+                 width = 0.3,  # Further reduced bar width
+                 position = position_nudge(y = 0)) +
+        coord_flip() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme_minimal() +
+        theme(
+          axis.text.y = if(prod == unique(comparison_data$Product)[1]) element_text(size = 12) else element_blank(),
+          axis.text.x = element_text(size = 10),
+          plot.margin = margin(10, 10, 50, 10),  # Increased bottom margin
+          panel.grid = element_blank(),  # Remove grid lines
+          plot.caption = element_text(hjust = 0.5, size = 12, margin = margin(t = 10))  # Center caption, add top margin
+        ) +
+        geom_text(
+          aes(label = sprintf("%.1f%%", Deviation * 100)),
+          hjust = ifelse(prod_data$Deviation > 0, -0.2, 1.2),
+          size = 5
+        ) +
+        scale_y_continuous(limits = c(-0.13, 0.13), 
+                           breaks = NULL)  # Remove axis labels and ticks
+      
+      # Add product name as a caption
+      p <- p + labs(caption = paste(prod))
+      
+      return(p)
+    })
+    
+    # Check if there are plots to combine (need at least 2)
+    if (length(plot_list) < 2) {
+      # Return a simple message if we don't have enough data for comparison
+      return(ggplot() + 
+               annotate("text", x = 0.5, y = 0.5, 
+                        label = "Insufficient data for comparison with current filter",
+                        size = 6) +
+               theme_void())
+    }
+   
+    # Modify the first plot to show full y-axis labels
+    plot_list[[1]] <- plot_list[[1]] + 
+      theme(axis.text.y = element_text(size = 12))
+    
+    # Menambahkan informasi filter ke judul
+    subtitle_text <- if(input$ageFilter == "All") {
+      "Deviation from Average"
+    } else {
+      paste("Deviation from Average -", input$ageFilter, "Age Group")
+    }
+    
+    # Add overall title and subtitle
+    final_plot <- (plot_list[[1]] + plot_list[[2]] + plot_layout(ncol = 2)) + 
+      plot_annotation(
+        title = "Comparison between Products",
+        subtitle = subtitle_text,
+        theme = theme(
+          plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+          plot.subtitle = element_text(hjust = 0.5, size = 12)
+        )
+      )
+    
+    final_plot
+  })
+}
+
+# Run the app
+shinyApp(ui, server)
